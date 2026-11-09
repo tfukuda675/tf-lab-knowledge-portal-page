@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><title>JSON catalog validation tests</title>
+<h1>JSON catalog validation tests</h1><pre id="results">RUNNING</pre>
+<script src="../src/portal/catalog.js"></script>
+<script>
+'use strict';
+const api=window.PortalCatalog, results=[];
+const clone=value=>JSON.parse(JSON.stringify(value));
+const base={schemaVersion:1,categories:[{id:'team',name:'チーム',icon:'book',color:'teal',description:''}],resources:[{id:'doc',title:'チーム資料',description:'資料の説明',category:'team',type:'Wiki',tags:['入門'],updated:'2026-11-07',owner:'部門',url:'https://example.com/docs'}],courses:[{id:'path',title:'入門コース',description:'順に読む',steps:['doc']}]};
+function test(name,run){try{if(!run())throw new Error('assertion failed');results.push({name,pass:true});}catch(error){results.push({name,pass:false,error:error.message});}}
+function invalid(name,mutate){test(name,()=>{const item=clone(base);mutate(item);const result=api.validate(item);return !result.ok&&result.catalog===null&&result.errors.length>0&&result.errors.every(e=>typeof e==='string');});}
+test('valid catalog and defaults normalize',()=>{const r=api.validate(base);return r.ok&&r.catalog.schemaVersion===1&&r.catalog.courses[0].confirmation==='self'&&r.catalog.courses[0].label==='学習コース'&&Object.keys(r.catalog.courses[0].checks).length===0;});
+test('missing schemaVersion supports legacy data',()=>{const item=clone(base);delete item.schemaVersion;return api.validate(item).ok;});
+test('empty resources and courses are accepted',()=>api.validate({categories:base.categories,resources:[],courses:[]}).ok);
+test('optional category presentation defaults',()=>{const r=api.validate({categories:[{id:'team',name:'チーム'}],resources:[],courses:[]});return r.ok&&r.catalog.categories[0].icon==='book'&&r.catalog.categories[0].color==='teal';});
+test('unknown ordinary fields are omitted',()=>{const item=clone(base);item.privateNote='omit';item.resources[0].other='omit';const r=api.validate(item);return r.ok&&!('privateNote'in r.catalog)&&!('other'in r.catalog.resources[0]);});
+test('different entity namespaces may share IDs',()=>{const item=clone(base);item.categories[0].id='same';item.resources[0].id='same';item.resources[0].category='same';item.courses[0].id='same';item.courses[0].steps=['same'];return api.validate(item).ok;});
+test('non-object input is rejected',()=>!api.validate([]).ok&&!api.validate(null).ok&&!api.validate('json').ok);
+invalid('unsupported schema version',item=>item.schemaVersion=2);
+invalid('at least one category required',item=>item.categories=[]);
+invalid('missing resources array',item=>delete item.resources);
+invalid('duplicate category ID',item=>item.categories.push(clone(item.categories[0])));
+invalid('duplicate resource ID',item=>item.resources.push(clone(item.resources[0])));
+invalid('duplicate course ID',item=>item.courses.push(clone(item.courses[0])));
+invalid('prototype ID rejected',item=>item.resources[0].id='__proto__');
+invalid('constructor ID rejected',item=>item.categories[0].id='constructor');
+invalid('all category filter sentinel rejected',item=>item.categories[0].id='all');
+invalid('unsafe characters in ID',item=>item.resources[0].id='資料/1');
+invalid('unknown category reference',item=>item.resources[0].category='missing');
+invalid('unknown course resource reference',item=>item.courses[0].steps=['missing']);
+invalid('duplicate course steps',item=>item.courses[0].steps=['doc','doc']);
+invalid('empty course steps',item=>item.courses[0].steps=[]);
+invalid('unknown icon',item=>item.categories[0].icon='unknown');
+invalid('unknown color',item=>item.categories[0].color='red');
+invalid('unknown resource type',item=>item.resources[0].type='HTML');
+invalid('empty title',item=>item.resources[0].title='  ');
+invalid('overlong title',item=>item.resources[0].title='x'.repeat(101));
+invalid('missing tags',item=>delete item.resources[0].tags);
+invalid('too many tags',item=>item.resources[0].tags=Array(11).fill('tag'));
+invalid('invalid date of month',item=>item.resources[0].updated='2026-02-30');
+invalid('invalid non-leap date',item=>item.resources[0].updated='2026-02-29');
+test('valid leap date accepted',()=>{const item=clone(base);item.resources[0].updated='2024-02-29';return api.validate(item).ok;});
+invalid('javascript URL rejected',item=>item.resources[0].url='javascript:alert(1)');
+invalid('relative URL rejected',item=>item.resources[0].url='/docs');
+invalid('URL credentials rejected',item=>item.resources[0].url='https://user:pass@example.com/');
+test('null sample URL accepted',()=>{const item=clone(base);item.resources[0].url=null;return api.validate(item).ok;});
+test('HTTP URL accepted',()=>{const item=clone(base);item.resources[0].url='http://example.com/';return api.validate(item).ok;});
+test('dangerous unknown JSON key rejected',()=>{const item=clone(base);item.extra=JSON.parse('{"__proto__":{"polluted":true}}');return !api.validate(item).ok&&({}).polluted===undefined;});
+const quiz=clone(base);quiz.courses[0].confirmation='quiz';quiz.courses[0].checks={doc:{question:'何を学ぶ？',options:['基本','応用','その他'],answer:0}};
+test('valid quiz accepted',()=>api.validate(quiz).ok);
+function badQuiz(name,mutate){test(name,()=>{const item=clone(quiz);mutate(item.courses[0]);return !api.validate(item).ok;});}
+badQuiz('quiz requires every resource question',course=>course.checks={});
+badQuiz('quiz requires distinct trimmed options',course=>course.checks.doc.options=['A',' A ','B']);
+badQuiz('quiz requires exactly three choices',course=>course.checks.doc.options=['A','B']);
+badQuiz('quiz answer index must be integer 0..2',course=>course.checks.doc.answer=3);
+badQuiz('quiz question must not be empty',course=>course.checks.doc.question='');
+invalid('unknown confirmation mode',item=>item.courses[0].confirmation='approval');
+test('data script round-trips text without executing it',()=>{const item=clone(base),closing='<'+ '/script>';item.resources[0].title=closing+'<script>throw new Error("no")'+closing+'before'+String.fromCharCode(8232)+'after';const normalized=api.validate(item).catalog;const script=api.toDataScript(normalized);const fake={};new Function('window',script)(fake);return !script.includes(closing)&&fake.PORTAL_DATA.resources[0].title===normalized.resources[0].title;});
+test('data script rejects invalid catalogs',()=>{try{api.toDataScript({});return false;}catch(error){return error instanceof Error;}});
+test('unchanged courses retain and prune progress',()=>{const r=api.retainProgress(base,clone(base),{path:['doc','doc','missing'],other:['doc']});return JSON.stringify(r)==='{"path":["doc"]}';});
+test('changed referenced resource resets progress',()=>{const item=clone(base);item.resources[0].url='https://example.com/new';return Object.keys(api.retainProgress(base,item,{path:['doc']})).length===0;});
+test('changed course resets progress',()=>{const item=clone(base);item.courses[0].title='新しいコース';return Object.keys(api.retainProgress(base,item,{path:['doc']})).length===0;});
+test('unchanged normalization preserves progress',()=>{const item=clone(base);item.courses[0].confirmation='self';return api.retainProgress(base,item,{path:['doc']}).path[0]==='doc';});
+test('changed quiz resets progress',()=>{const item=clone(quiz);item.courses[0].checks.doc.answer=1;return Object.keys(api.retainProgress(quiz,item,{path:['doc']})).length===0;});
+test('bounded error output',()=>{const item=clone(base);item.resources=Array.from({length:60},()=>({}));const r=api.validate(item);return !r.ok&&r.errors.length<=30;});
+const failed=results.filter(r=>!r.pass);document.querySelector('#results').textContent=(failed.length?'FAIL':'PASS')+'\n'+JSON.stringify(results,null,2);
+</script></html>

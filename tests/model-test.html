@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><title>Portal model tests</title>
+<h1>Portal model tests</h1><pre id="results">RUNNING</pre>
+<script src="../src/portal/data.js"></script><script src="../src/portal/model.js"></script>
+<script>
+'use strict';
+const results = [];
+function check(name, condition) { results.push({name, pass: !!condition}); if (!condition) throw new Error(name); }
+try {
+  const model = window.PortalModel;
+  const resources = window.PORTAL_DATA.resources;
+  check('reject javascript URL', model.safeUrl('javascript:alert(1)') === null);
+  check('reject data URL', model.safeUrl('data:text/html,hello') === null);
+  check('reject relative URL', model.safeUrl('/internal') === null);
+  check('reject URL credentials', model.safeUrl('https://user:password@example.com') === null);
+  check('reject invalid URL', model.safeUrl('https://') === null);
+  check('accept HTTPS', model.safeUrl('https://example.com/docs') === 'https://example.com/docs');
+  check('accept HTTP', model.safeUrl('http://intranet.example.com/') === 'http://intranet.example.com/');
+  check('Japanese search', model.filterResources(resources, {query:'経費'}).length === 1);
+  check('full-width case normalization', model.filterResources(resources, {query:'ＧＩＴ'}).some(r => r.id === 'r6'));
+  check('multiple words are AND', model.filterResources(resources, {query:'経費 Git'}).length === 0);
+  check('combined category and type', model.filterResources(resources, {category:'technology',type:'動画'}).map(r=>r.id).join() === 'r7');
+  check('bookmark-only filter', model.filterResources(resources, {bookmarksOnly:true, bookmarks:['r1']}).map(r=>r.id).join() === 'r1');
+  check('empty result', model.filterResources(resources, {query:'見つからない単語000'}).length === 0);
+  const item = {id:'user-test',title:'資料',description:'説明',category:'technology',type:'Wiki',tags:['test'],updated:'2026-11-07',owner:'自分',url:'https://example.com/'};
+  check('valid saved resource', model.validSavedResource(item,['technology']));
+  check('malformed saved data rejected', !model.validSavedResource({...item,tags:42},['technology']));
+  check('unsafe saved URL rejected', !model.validSavedResource({...item,url:'javascript:alert(1)'},['technology']));
+  check('unknown saved category rejected', !model.validSavedResource(item,['operations']));
+  check('every course points to existing resources', window.PORTAL_DATA.courses.every(c=>c.steps.every(id=>resources.some(r=>r.id===id))));
+  document.querySelector('#results').textContent = 'PASS\n' + JSON.stringify(results,null,2);
+} catch(error) { document.querySelector('#results').textContent = 'FAIL\n' + error.stack + '\n' + JSON.stringify(results,null,2); }
+</script></html>

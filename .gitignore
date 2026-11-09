@@ -1,0 +1,5 @@
+!index.html
+!samples.html
+!src/samples/**/*.html
+!tests/
+!tests/**

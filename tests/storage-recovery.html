@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><title>Storage recovery test</title>
+<h1>Storage recovery test</h1><pre id="results">RUNNING</pre><iframe id="portal" src="../index.html" title="テスト対象"></iframe>
+<script>
+'use strict';
+const frame=document.querySelector('#portal');
+frame.addEventListener('load', async function run() {
+  try {
+    const win=frame.contentWindow;
+    win.localStorage.setItem('tsumugu-v1','{invalid JSON');
+    const loaded=new Promise(resolve=>frame.addEventListener('load',resolve,{once:true}));
+    win.location.reload(); await loaded;
+    const doc=frame.contentDocument;
+    if(doc.querySelectorAll('.resource-card').length!==6) throw new Error('initial resources not recovered');
+    if(!doc.querySelector('#storage-warning').hidden) throw new Error('corrupt JSON incorrectly disables available storage');
+    doc.querySelector('.bookmark-button').click();
+    const saved=JSON.parse(win.localStorage.getItem('tsumugu-v1'));
+    if(saved.bookmarks.length!==1) throw new Error('new action not persisted after recovery');
+    win.localStorage.removeItem('tsumugu-v1');
+    document.querySelector('#results').textContent='PASS\nCorrupt JSON ignored, initial resources recovered, storage remains available, new bookmark persisted.';
+  } catch(error) { document.querySelector('#results').textContent='FAIL\n'+error.stack; }
+},{once:true});
+</script></html>

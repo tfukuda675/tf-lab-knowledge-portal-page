@@ -1,0 +1,61 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><title>JSON catalog import/export tests</title>
+<h1>JSON catalog import/export tests</h1><pre id="results">RUNNING</pre>
+<iframe id="portal" src="../index.html" title="テスト対象" style="width:390px;height:1100px"></iframe>
+<script>
+'use strict';
+const frame=document.querySelector('#portal'),results=[];
+const doc=()=>frame.contentDocument,$=selector=>doc().querySelector(selector);
+const check=(name,ok)=>{results.push({name,pass:!!ok});document.querySelector('#results').textContent='RUNNING\n'+JSON.stringify(results,null,2);if(!ok)throw new Error(name);};
+const tick=()=>new Promise(resolve=>setTimeout(resolve,150));
+const nextLoad=()=>new Promise(resolve=>frame.addEventListener('load',resolve,{once:true}));
+const input=(selector,value)=>{const el=$(selector);el.value=value;for(const type of ['input','change'])el.dispatchEvent(new frame.contentWindow.Event(type,{bubbles:true}));};
+const state=()=>JSON.parse(frame.contentWindow.localStorage.getItem('tsumugu-v1'));
+async function chooseFile(text){const win=frame.contentWindow,transfer=new win.DataTransfer();transfer.items.add(new win.File([text],'portal-catalog.json',{type:'application/json'}));$('#import-json').files=transfer.files;await new Promise((resolve,reject)=>{let timer;const observer=new win.MutationObserver(()=>{if(!$('#apply-import').disabled||$('#import-preview').classList.contains('import-error')){observer.disconnect();clearTimeout(timer);resolve();}});observer.observe($('#import-preview'),{childList:true,attributes:true,subtree:true});timer=setTimeout(()=>{observer.disconnect();reject(new Error('FileReader did not finish: '+$('#import-preview').textContent));},5000);$('#import-json').dispatchEvent(new win.Event('change',{bubbles:true}));});}
+frame.addEventListener('load',async function run(){
+ try{
+  const win=frame.contentWindow;
+  // Use a disposable profile: this test replaces the portal's local demo catalog.
+  win.localStorage.setItem('tsumugu-v1',JSON.stringify({resources:[{id:'user-export-test',title:'追加済み資料',description:'書出し対象',category:'learning',type:'Web',tags:[],updated:'2026-11-07',owner:'自分',url:'https://example.com/extra'}],courses:[],bookmarks:['r1','user-export-test'],progress:{c1:['r1'],c2:['r7']}}));
+  let loaded=nextLoad();win.location.reload();await loaded;
+  let blobs=[],names=[];
+  function interceptDownloads(){const nativeURL=win.URL.createObjectURL.bind(win.URL),nativeClick=win.HTMLAnchorElement.prototype.click;win.URL.createObjectURL=blob=>{blobs.push(blob);return nativeURL(blob);};win.HTMLAnchorElement.prototype.click=function(){if(this.download){names.push(this.download);return;}return nativeClick.call(this);};}
+  interceptDownloads();$('#data-management').click();check('data dialog opens',$('#data-dialog').open);
+  $('#export-json').click();await tick();
+  let exported=JSON.parse(await blobs.at(-1).text());
+  check('JSON includes base and added resources',exported.resources.length===13&&exported.resources.some(r=>r.id==='user-export-test'));
+  check('JSON contains categories and course sequence',exported.schemaVersion===1&&exported.categories.length===4&&exported.courses[0].steps.join(',')==='r1,r2,r3');
+  check('JSON excludes personal activity',!('bookmarks'in exported)&&!('progress'in exported));
+  $('#export-data-script').click();await tick();const script=await blobs.at(-1).text(),sandbox={};new Function('window',script)(sandbox);
+  check('portable data.js is valid and complete',names.at(-1)==='data.js'&&sandbox.PORTAL_DATA.resources.length===13);
+  await chooseFile('{broken json');check('invalid JSON is rejected',$('#apply-import').disabled);
+  check('invalid import keeps current data',!state().catalog&&state().resources[0].id==='user-export-test');
+  const invalid=JSON.parse(JSON.stringify(exported));invalid.resources[0].url='javascript:alert(1)';await chooseFile(JSON.stringify(invalid));check('unsafe URLs cannot be applied',$('#apply-import').disabled);
+  await chooseFile(JSON.stringify(exported));check('valid file is initially ready',!$('#apply-import').disabled);
+  await chooseFile(' '.repeat(2*1024*1024+1));check('oversized file clears previously valid stage',$('#apply-import').disabled&&$('#import-preview').textContent.includes('2MB'));
+  const edited=JSON.parse(JSON.stringify(exported));edited.categories.push({id:'custom-guides',name:'独自カテゴリ',icon:'book',color:'teal',description:'JSONで追加'});
+  edited.resources=edited.resources.filter(r=>r.id!=='user-export-test');edited.resources.find(r=>r.id==='r1').title='JSONから編集したチーム資料';edited.resources.find(r=>r.id==='r1').url='https://example.com/edited';edited.resources.find(r=>r.id==='r1').category='custom-guides';edited.courses.find(c=>c.id==='c1').steps=['r2','r1','r3'];
+  await chooseFile(JSON.stringify(edited));check('valid JSON stages a preview',!$('#apply-import').disabled&&$('#import-preview').textContent.includes('12'));
+  check('preview has no side effects',!state().catalog&&state().bookmarks.includes('user-export-test'));
+  check('import dialog fits mobile viewport',$('#data-dialog').scrollWidth<=$('#data-dialog').clientWidth+1);
+  $('#data-dialog').close();await tick();$('#data-management').click();check('cancelling clears staged data without applying',$('#apply-import').disabled&&!state().catalog);
+  await chooseFile(JSON.stringify(edited));
+  $('#apply-import').click();await tick();
+  check('apply replaces effective catalog',state().catalog.resources.find(r=>r.id==='r1').title==='JSONから編集したチーム資料'&&state().resources.length===0);
+  check('removed resource bookmarks are pruned',state().bookmarks.join(',')==='r1');
+  check('changed course progress resets',!(state().progress.c1||[]).length);
+  check('unchanged course progress remains',state().progress.c2.join(',')==='r7');
+  if($('#data-dialog').open)$('#data-dialog').close();
+  input('#search','JSONから編集');check('imported title appears in HTML',$('#resource-grid').textContent.includes('JSONから編集したチーム資料'));
+  check('imported category appears in navigation',$('#category-nav').textContent.includes('独自カテゴリ'));
+  loaded=nextLoad();win.location.reload();await loaded;
+  input('#search','JSONから編集');check('import survives reload',$('#resource-grid').textContent.includes('JSONから編集したチーム資料'));
+  $('#add-button').click();input('#add-form [name=title]','取り込み後の追加');input('#add-form [name=url]','https://example.com/new');input('#add-category','custom-guides');$('#add-form').requestSubmit();
+  check('link creation works in imported category',state().resources.some(r=>r.category==='custom-guides'&&r.title==='取り込み後の追加'));
+  $('#data-management').click();$('#restore-file-data').click();check('file restore is staged until explicit apply',state().catalog.resources.some(r=>r.id==='r1'&&r.category==='custom-guides')&&!$('#apply-import').disabled);
+  $('#apply-import').click();await tick();check('file restore removes catalog override',!state().catalog);
+  if($('#data-dialog').open)$('#data-dialog').close();input('#search','チームハンドブック');check('original file data is available',$('#resource-grid').textContent.includes('チームハンドブック'));
+  win.localStorage.removeItem('tsumugu-v1');
+  document.querySelector('#results').textContent='PASS\n'+JSON.stringify(results,null,2);
+ }catch(error){document.querySelector('#results').textContent='FAIL\n'+error.stack+'\nPreview: '+($('#import-preview')?.textContent||'')+'\n'+JSON.stringify(results,null,2);}
+},{once:true});
+</script></html>
